@@ -5,14 +5,11 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:4000";
 let socket;
 
 export default function App() {
-  const [view, setView] = useState(localStorage.getItem("verified") ? "home" : "setup");
+  const [view, setView] = useState(() => localStorage.getItem("view") || "setup");
   const [user, setUser] = useState(() => {
     const saved = localStorage.getItem("user");
     return saved ? JSON.parse(saved) : { name: "", gender: "", verified: false };
   });
-
-  const [question, setQuestion] = useState({});
-  const [answer, setAnswer] = useState("");
   const [selected, setSelected] = useState([]);
   const [custom, setCustom] = useState("");
   const [status, setStatus] = useState("Not connected");
@@ -20,97 +17,80 @@ export default function App() {
   const [partner, setPartner] = useState(null);
   const [messages, setMessages] = useState([]);
   const [userCount, setUserCount] = useState(0);
-  const [searching, setSearching] = useState(false);
   const inputRef = useRef();
   const msgBoxRef = useRef();
 
   const defaultTags = ["Travel", "Food", "Music", "Friends"];
+  const [question, setQuestion] = useState({});
+  const [answer, setAnswer] = useState("");
 
-  // --- Initialize socket ---
+  // Generate human test
+  const generateQuestion = () => {
+    const a = Math.floor(Math.random() * 5) + 1;
+    const b = Math.floor(Math.random() * 5) + 1;
+    setQuestion({ a, b });
+  };
+
+  useEffect(() => generateQuestion(), []);
+
   useEffect(() => {
     socket = io(SOCKET_URL, { autoConnect: false });
 
     socket.on("connect", () => setStatus("Connected to server"));
-    socket.on("disconnect", () => {
-      setStatus("Disconnected");
-      setSearching(false);
-    });
-
+    socket.on("waiting", () => setStatus("Searching for partner..."));
     socket.on("user_count", (count) => setUserCount(count));
-
-    socket.on("waiting", () => {
-      setStatus("Searching for a partner...");
-      setPartner(null);
-      setSearching(true);
-    });
 
     socket.on("match_found", (data) => {
       setRoomId(data.roomId);
       setPartner(data.partner);
       setStatus(
         `Matched with ${data.partner.name} (${data.partner.gender}) — Shared: ${
-          data.partner.shared.length ? data.partner.shared.join(", ") : "none"
+          data.partner.shared.join(", ") || "none"
         }`
       );
+      setMessages([]);
       setView("chat");
-      setSearching(false);
+      localStorage.setItem("view", "chat");
     });
 
     socket.on("receive_message", (m) => {
       setMessages((prev) => [...prev, { from: "them", text: m.text }]);
+      setTimeout(() => {
+        msgBoxRef.current?.scrollTo(0, msgBoxRef.current.scrollHeight);
+      }, 50);
     });
 
     socket.on("chat_ended", () => {
-      setStatus("Partner disconnected — searching new...");
-      setMessages([]);
+      setStatus("Partner disconnected or chat ended");
       setPartner(null);
       setRoomId(null);
-      setSearching(true);
-      start(); // auto-reconnect to a new one
+      setTimeout(() => setView("home"), 1200);
     });
 
+    socket.on("disconnect", () => setStatus("Disconnected"));
     return () => {
-      socket.disconnect();
-      socket.off();
+      try {
+        socket.disconnect();
+        socket.off();
+      } catch {}
     };
   }, []);
 
-  // --- Scroll chat down automatically ---
-  useEffect(() => {
-    if (msgBoxRef.current) {
-      msgBoxRef.current.scrollTop = msgBoxRef.current.scrollHeight;
-    }
-  }, [messages]);
-
-  // --- Verification challenge ---
-  function generateQuestion() {
-    const a = Math.floor(Math.random() * 5) + 1;
-    const b = Math.floor(Math.random() * 5) + 1;
-    setQuestion({ a, b });
-  }
-
-  useEffect(() => generateQuestion(), []);
-
   function verifyUser() {
-    if (!user.name || !user.gender) {
-      alert("Please enter your name and select gender");
-      return;
-    }
+    if (!user.name || !user.gender) return alert("Please enter name & gender");
     if (parseInt(answer) !== question.a + question.b) {
-      alert("Verification failed. Try again.");
+      alert("Verification failed, try again.");
       generateQuestion();
       setAnswer("");
       return;
     }
-
     const verifiedUser = { ...user, verified: true };
     setUser(verifiedUser);
     localStorage.setItem("user", JSON.stringify(verifiedUser));
-    localStorage.setItem("verified", "true");
     setView("home");
+    localStorage.setItem("view", "home");
   }
 
-  // --- Tag management ---
   function toggle(tag) {
     setSelected((prev) =>
       prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
@@ -119,19 +99,33 @@ export default function App() {
 
   function addCustomInterest() {
     const trimmed = custom.trim();
-    if (trimmed && !selected.includes(trimmed)) {
-      setSelected((prev) => [...prev, trimmed]);
-    }
+    if (trimmed && !selected.includes(trimmed)) setSelected([...selected, trimmed]);
     setCustom("");
   }
 
-  // --- Chat control ---
-  function start() {
-    if (!socket.connected) socket.connect();
+  function startChat() {
+    if (!user.verified) return alert("Please verify first.");
+    socket.connect();
+    socket.emit("join_waitlist", { interests: selected, user });
+    setStatus("Searching for partner...");
+  }
+
+  function skipChat() {
+    if (!roomId) return;
+    socket.emit("skip_chat", { roomId });
     setMessages([]);
     setPartner(null);
-    setSearching(true);
-    socket.emit("join_waitlist", { interests: selected, user });
+    setRoomId(null);
+    setStatus("Searching for next partner...");
+  }
+
+  function endChat() {
+    if (roomId) socket.emit("leave_chat", { roomId });
+    setMessages([]);
+    setPartner(null);
+    setRoomId(null);
+    setStatus("Chat ended");
+    setTimeout(() => setView("home"), 1000);
   }
 
   function send() {
@@ -140,24 +134,7 @@ export default function App() {
     socket.emit("send_message", { roomId, message: txt });
     setMessages((prev) => [...prev, { from: "me", text: txt }]);
     inputRef.current.value = "";
-  }
-
-  function skipChat() {
-    if (roomId) {
-      socket.emit("skip_chat", { roomId });
-      setMessages([]);
-      setPartner(null);
-      setSearching(true);
-    }
-  }
-
-  function endChat() {
-    if (roomId) socket.emit("leave_chat", { roomId });
-    setRoomId(null);
-    setMessages([]);
-    setPartner(null);
-    setSearching(false);
-    setView("home");
+    msgBoxRef.current.scrollTop = msgBoxRef.current.scrollHeight;
   }
 
   return (
@@ -168,11 +145,11 @@ export default function App() {
           <div className="badge">{userCount} online</div>
         </header>
 
-        {/* STEP 1: Setup */}
+        {/* STEP 1 - SETUP */}
         {view === "setup" && (
           <div className="setup">
             <h2>Welcome to ChatMitra</h2>
-            <p>Before you start, please verify you’re human 👋</p>
+            <p>Please verify yourself to continue.</p>
 
             <input
               type="text"
@@ -198,23 +175,23 @@ export default function App() {
 
             <div className="verify">
               <p>
-                Solve: {question.a} + {question.b} = ?
+                Are you human? What is {question.a} + {question.b} ?
               </p>
               <input
                 value={answer}
                 onChange={(e) => setAnswer(e.target.value)}
-                placeholder="Answer"
+                placeholder="Enter answer"
               />
               <button onClick={verifyUser}>Verify & Continue</button>
             </div>
           </div>
         )}
 
-        {/* STEP 2: Interest Selection */}
+        {/* STEP 2 - HOME */}
         {view === "home" && (
           <div className="home">
             <h1>Hello, {user.name} 👋</h1>
-            <p>Select your interests to find a partner</p>
+            <p>Select your interests to find a match.</p>
 
             <div className="tags">
               {defaultTags.map((t) => (
@@ -229,11 +206,7 @@ export default function App() {
               {selected
                 .filter((t) => !defaultTags.includes(t))
                 .map((t) => (
-                  <button
-                    key={t}
-                    className="tag active"
-                    onClick={() => toggle(t)}
-                  >
+                  <button key={t} className="tag active" onClick={() => toggle(t)}>
                     {t}
                   </button>
                 ))}
@@ -248,35 +221,33 @@ export default function App() {
               <button onClick={addCustomInterest}>Add</button>
             </div>
 
-            <button className="start" onClick={start}>
+            <button className="start" onClick={startChat}>
               Start Chat
             </button>
           </div>
         )}
 
-        {/* STEP 3: Chat */}
+        {/* STEP 3 - CHAT */}
         {view === "chat" && (
           <div className="chat">
             <div className="chat-top">
               <div>{status}</div>
-              <div className="chat-actions">
-                <button onClick={skipChat}>Skip</button>
-                <button onClick={endChat}>End</button>
+              <div>
+                <button className="skip" onClick={skipChat}>
+                  Skip
+                </button>
+                <button className="end" onClick={endChat}>
+                  End Chat
+                </button>
               </div>
             </div>
 
-            <div className="messages" ref={msgBoxRef}>
+            <div className="messages" id="msgbox" ref={msgBoxRef}>
               {messages.map((m, i) => (
-                <div
-                  key={i}
-                  className={m.from === "me" ? "msg me" : "msg them"}
-                >
+                <div key={i} className={m.from === "me" ? "msg me" : "msg them"}>
                   {m.text}
                 </div>
               ))}
-              {searching && (
-                <div className="searching">Searching for a partner...</div>
-              )}
             </div>
 
             <div className="composer">
@@ -290,9 +261,7 @@ export default function App() {
           </div>
         )}
 
-        <footer className="foot">
-          © {new Date().getFullYear()} ChatMitra — Ephemeral chats
-        </footer>
+        <footer className="foot">© {new Date().getFullYear()} ChatMitra</footer>
       </div>
     </div>
   );

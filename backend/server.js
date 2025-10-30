@@ -82,7 +82,7 @@ io.on('connection', (socket) => {
     const room = rooms.get(roomId);
     if (!room) return;
     room.messages.push({ from: socket.id, text: message, ts: Date.now() });
-    io.to(roomId).emit('receive_message', { from: socket.id, text: message });
+    socket.to(roomId).emit('receive_message', { text: message });
   });
 
   socket.on('leave_chat', ({ roomId } = {}) => {

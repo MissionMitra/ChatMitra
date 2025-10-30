@@ -13,8 +13,9 @@ const io = new Server(server, {
   cors: { origin: "*" },
 });
 
-const waitlist = []; // users waiting for match
-const activeRooms = {}; // { roomId: [socketA, socketB] }
+const waitlist = [];
+const activeRooms = {};
+const userSessions = {}; // userId -> { name, gender, interests }
 
 const PORT = process.env.PORT || 4000;
 
@@ -64,9 +65,26 @@ io.on("connection", (socket) => {
     removeFromWaitlist(socket);
   });
 
+  // Reconnect users with session data
+  socket.on("restore_session", (session) => {
+    if (session && session.userId && userSessions[session.userId]) {
+      socket.data = userSessions[session.userId];
+      console.log(`♻️ Restored session for ${socket.data.name}`);
+      socket.emit("session_restored", socket.data);
+    } else {
+      socket.emit("no_session");
+    }
+  });
+
   socket.on("join_waitlist", (data) => {
-    const { interests = [], user = {} } = data;
-    socket.data = { ...user, interests };
+    const { interests = [], user = {}, userId } = data;
+
+    // Save session data
+    if (userId) {
+      userSessions[userId] = { ...user, interests };
+    }
+
+    socket.data = { ...user, interests, userId };
 
     // Prevent duplicates
     removeFromWaitlist(socket);
@@ -74,7 +92,6 @@ io.on("connection", (socket) => {
 
     console.log(`🕓 ${user.name} joined waitlist (${waitlist.length} waiting)`);
 
-    // Try to find a match
     const match = waitlist.find(
       (other) =>
         other.id !== socket.id &&
@@ -87,7 +104,7 @@ io.on("connection", (socket) => {
       removeFromWaitlist(socket);
       createRoom(socket, match, shared);
     } else {
-      // No interest match, fallback random after 5s
+      // Fallback random after 5s
       setTimeout(() => {
         if (waitlist.includes(socket)) {
           const random = waitlist.find((s) => s.id !== socket.id);
@@ -124,7 +141,6 @@ io.on("connection", (socket) => {
       delete activeRooms[roomId];
     }
 
-    // Rejoin waitlist immediately
     waitlist.push(socket);
     socket.emit("waiting");
     console.log(`${socket.data.name} skipped chat and rejoined`);

@@ -129,3 +129,106 @@ body {
   font-size: 0.8rem;
   color: #a8dadc;
 }
+/* Restore Home screen look */
+.home {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 20px;
+  background-color: #06121f;
+  color: #e2e8f0;
+}
+
+.home h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #f8fafc;
+  margin-bottom: 10px;
+}
+
+.home .tagline {
+  font-size: 1rem;
+  color: #94a3b8;
+  text-align: center;
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.tag {
+  background-color: #1e293b;
+  color: #cbd5e1;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+}
+
+.tag:hover {
+  background-color: #334155;
+}
+
+.tag.active {
+  background: linear-gradient(135deg, #0ea5e9, #22d3ee);
+  color: white;
+}
+
+.custom {
+  display: flex;
+  gap: 8px;
+}
+
+.custom input {
+  background-color: #1e293b;
+  color: #f1f5f9;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 10px;
+  outline: none;
+}
+
+.custom button {
+  background-color: #1d4ed8;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: 0.2s;
+}
+
+.custom button:hover {
+  background-color: #2563eb;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.start {
+  background: linear-gradient(135deg, #0ea5e9, #22d3ee);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.small {
+  font-size: 0.85rem;
+  color: #94a3b8;
+  text-align: center;
+  max-width: 300px;
+}
+

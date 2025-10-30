@@ -9,10 +9,13 @@ app.use(helmet());
 app.use(cors());
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+const io = new Server(server, {
+  cors: { origin: "*" },
+});
 
-const waitlist = [];
-const activeRooms = {};
+const waitlist = []; // users waiting for match
+const activeRooms = {}; // { roomId: [socketA, socketB] }
+
 const PORT = process.env.PORT || 4000;
 
 function getSharedInterests(a, b) {
@@ -24,113 +27,84 @@ function removeFromWaitlist(socket) {
   if (index !== -1) waitlist.splice(index, 1);
 }
 
-function leaveActiveRoom(socket) {
-  for (const [roomId, members] of Object.entries(activeRooms)) {
-    if (members.includes(socket)) {
-      io.to(roomId).emit("chat_ended");
-      members.forEach((s) => s.leave(roomId));
-      delete activeRooms[roomId];
-      break;
-    }
-  }
+function createRoom(socketA, socketB, shared) {
+  const roomId = `${socketA.id}-${socketB.id}`;
+  socketA.join(roomId);
+  socketB.join(roomId);
+  activeRooms[roomId] = [socketA, socketB];
+
+  socketA.emit("match_found", {
+    roomId,
+    partner: {
+      name: socketB.data.name,
+      gender: socketB.data.gender,
+    },
+    shared,
+  });
+
+  socketB.emit("match_found", {
+    roomId,
+    partner: {
+      name: socketA.data.name,
+      gender: socketA.data.gender,
+    },
+    shared,
+  });
+
+  console.log(`✅ Match between ${socketA.data.name} and ${socketB.data.name}, shared: ${shared.join(", ") || "none"}`);
 }
 
 io.on("connection", (socket) => {
-  console.log("🟢 User connected:", socket.id);
+  console.log("🟢 Connected:", socket.id);
   io.emit("user_count", io.engine.clientsCount);
 
   socket.on("disconnect", () => {
-    console.log("🔴 User disconnected:", socket.id);
-    removeFromWaitlist(socket);
-    leaveActiveRoom(socket);
+    console.log("🔴 Disconnected:", socket.id);
     io.emit("user_count", io.engine.clientsCount);
+    removeFromWaitlist(socket);
   });
 
   socket.on("join_waitlist", (data) => {
     const { interests = [], user = {} } = data;
     socket.data = { ...user, interests };
 
+    // Prevent duplicates
     removeFromWaitlist(socket);
-    leaveActiveRoom(socket);
     waitlist.push(socket);
 
-    console.log(`🕒 ${socket.data.name} joined waitlist (${waitlist.length} waiting)`);
+    console.log(`🕓 ${user.name} joined waitlist (${waitlist.length} waiting)`);
 
+    // Try to find a match
     const match = waitlist.find(
       (other) =>
         other.id !== socket.id &&
-        other.data &&
-        getSharedInterests(other.data.interests, interests).length > 0
+        getSharedInterests(socket.data.interests, other.data.interests).length > 0
     );
 
     if (match) {
-      const roomId = `${socket.id}-${match.id}`;
-      socket.join(roomId);
-      match.join(roomId);
-
       const shared = getSharedInterests(socket.data.interests, match.data.interests);
-
-      removeFromWaitlist(socket);
       removeFromWaitlist(match);
-
-      activeRooms[roomId] = [socket, match];
-
-      socket.emit("match_found", {
-        roomId,
-        partner: {
-          name: match.data.name,
-          gender: match.data.gender,
-          shared,
-        },
-      });
-
-      match.emit("match_found", {
-        roomId,
-        partner: {
-          name: socket.data.name,
-          gender: socket.data.gender,
-          shared,
-        },
-      });
-
-      console.log(`✅ Match: ${socket.data.name} ↔ ${match.data.name}`);
+      removeFromWaitlist(socket);
+      createRoom(socket, match, shared);
     } else {
-      socket.emit("waiting");
-
+      // No interest match, fallback random after 5s
       setTimeout(() => {
         if (waitlist.includes(socket)) {
           const random = waitlist.find((s) => s.id !== socket.id);
           if (random) {
-            const roomId = `${socket.id}-${random.id}`;
-            socket.join(roomId);
-            random.join(roomId);
-
-            removeFromWaitlist(socket);
             removeFromWaitlist(random);
-
-            activeRooms[roomId] = [socket, random];
-
-            socket.emit("match_found", {
-              roomId,
-              partner: { name: random.data.name, gender: random.data.gender, shared: [] },
-            });
-
-            random.emit("match_found", {
-              roomId,
-              partner: { name: socket.data.name, gender: socket.data.gender, shared: [] },
-            });
-
-            console.log(`🎲 Random match: ${socket.data.name} ↔ ${random.data.name}`);
+            removeFromWaitlist(socket);
+            createRoom(socket, random, []);
+          } else {
+            socket.emit("waiting");
           }
         }
-      }, 8000);
+      }, 5000);
     }
   });
 
   socket.on("send_message", ({ roomId, message }) => {
-    if (activeRooms[roomId]) {
-      socket.to(roomId).emit("receive_message", { text: message });
-    }
+    socket.to(roomId).emit("receive_message", { text: message });
   });
 
   socket.on("leave_chat", ({ roomId }) => {
@@ -143,13 +117,19 @@ io.on("connection", (socket) => {
   });
 
   socket.on("skip_chat", ({ roomId }) => {
-    leaveActiveRoom(socket);
-    removeFromWaitlist(socket);
+    const members = activeRooms[roomId];
+    if (members) {
+      io.to(roomId).emit("chat_ended");
+      members.forEach((s) => s.leave(roomId));
+      delete activeRooms[roomId];
+    }
+
+    // Rejoin waitlist immediately
     waitlist.push(socket);
     socket.emit("waiting");
-    console.log(`⏭️ ${socket.data.name} skipped chat and rejoined waitlist`);
+    console.log(`${socket.data.name} skipped chat and rejoined`);
   });
 });
 
 app.get("/", (_, res) => res.send("Server running ✅"));
-server.listen(PORT, () => console.log("Server live on port", PORT));
+server.listen(PORT, () => console.log(`🚀 Server live on port ${PORT}`));

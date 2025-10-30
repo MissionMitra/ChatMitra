@@ -26,12 +26,10 @@ export default function App() {
 
     socket.on('connect', () => setStatus('Connected to server'));
     socket.on('waiting', () => setStatus('Waiting for a match...'));
-    socket.on('match_found', (data) => {
+    socket.on("match_found", (data) => {
   setRoomId(data.roomId);
-  const partnerName = data.partner?.name || "Anonymous";
-  const sharedList = data.shared?.length ? data.shared.join(", ") : "none";
-  setStatus(`Matched with ${partnerName} (${data.partner?.gender || 'Unknown'}) — Shared: ${sharedList}`);
-  setView("chat");
+  setStatus(`Matched with ${data.partner.name} (${data.partner.gender}) — Shared: ${data.partner.shared.join(', ') || 'none'}`);
+  setView('chat');
 });
 
     socket.on('receive_message', (m) => {

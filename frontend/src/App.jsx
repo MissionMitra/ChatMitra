@@ -1,8 +1,7 @@
 import React, {useState, useEffect, useRef} from 'react'
 import { io } from 'socket.io-client'
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:4000'
-
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'https://chatmitra-backend-e6rv.onrender.com'
 let socket
 
 export default function App(){
@@ -12,9 +11,15 @@ export default function App(){
   const [status, setStatus] = useState('Not connected')
   const [roomId, setRoomId] = useState(null)
   const [messages, setMessages] = useState([])
+  const [userCount, setUserCount] = useState(0)
+  const [isTyping, setIsTyping] = useState(false)
   const inputRef = useRef()
 
   useEffect(()=>{
+    // Load saved interests
+    const saved = localStorage.getItem('chatmitra_interests')
+    if(saved) setSelected(JSON.parse(saved))
+
     socket = io(SOCKET_URL, { autoConnect: false })
 
     socket.on('connect', ()=> setStatus('Connected to server'))
@@ -34,10 +39,29 @@ export default function App(){
       setTimeout(()=> setView('home'), 1200)
     })
     socket.on('disconnect', ()=> setStatus('Disconnected'))
+
+    // Typing indicator listeners
+    socket.on('user_typing', ()=> setIsTyping(true))
+    socket.on('user_stopped_typing', ()=> setIsTyping(false))
+
+    // Online user count
+    socket.on('user_count', (count)=> setUserCount(count))
+
     return ()=> {
       try { socket.disconnect(); socket.off(); } catch(e){}
     }
   },[])
+
+  // Persist interests
+  useEffect(()=>{
+    localStorage.setItem('chatmitra_interests', JSON.stringify(selected))
+  }, [selected])
+
+  // Auto-scroll messages
+  useEffect(()=>{
+    const box = document.getElementById('msgbox')
+    if(box) box.scrollTop = box.scrollHeight
+  }, [messages])
 
   function toggle(tag){
     setSelected(prev => prev.includes(tag) ? prev.filter(t=>t!==tag) : [...prev, tag])
@@ -60,6 +84,12 @@ export default function App(){
     inputRef.current.value = ''
   }
 
+  function handleTyping(){
+    if(roomId) socket.emit('typing', { roomId })
+    clearTimeout(window.typingTimeout)
+    window.typingTimeout = setTimeout(()=> socket.emit('stop_typing', { roomId }), 1000)
+  }
+
   function endChat(){
     if(roomId) socket.emit('leave_chat', { roomId })
   }
@@ -71,7 +101,7 @@ export default function App(){
       <div className="card">
         <header className="nav">
           <div className="logo">ChatMitra</div>
-          <div className="badge">No login • Ephemeral</div>
+          <div className="badge">{userCount} online</div>
         </header>
 
         {view === 'home' && (
@@ -106,14 +136,19 @@ export default function App(){
               <button className="end" onClick={endChat}>End Chat</button>
             </div>
 
+            <div className="chat-interests">
+              <small>Matched by: {selected.join(', ')}</small>
+            </div>
+
             <div className="messages" id="msgbox">
               {messages.map((m,i)=>(
                 <div key={i} className={m.from==='me' ? 'msg me':'msg them'}>{m.text}</div>
               ))}
+              {isTyping && <div className="typing">User is typing...</div>}
             </div>
 
             <div className="composer">
-              <input ref={inputRef} placeholder="Type your message..." onKeyDown={(e)=>{ if(e.key==='Enter') send() }} />
+              <input ref={inputRef} placeholder="Type your message..." onKeyDown={(e)=>{ if(e.key==='Enter') send() }} onChange={handleTyping}/>
               <button onClick={send}>Send</button>
             </div>
           </div>

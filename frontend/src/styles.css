@@ -108,3 +108,54 @@ body,html,#root{
   .cm-body{ padding:22px; }
   .messages{ max-height:520px; }
 }
+/* ---------- Restore WhatsApp-like vertical chat flow ---------- */
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  background: linear-gradient(180deg, rgba(0,12,20,0.12), rgba(0,8,12,0.06));
+  border-radius: 10px;
+  padding: 14px;
+  overflow-y: auto;
+  border: 1px solid rgba(255,255,255,0.02);
+  min-height: 220px;
+  max-height: 420px;
+}
+
+/* each message gets full line */
+.message {
+  align-self: flex-start;
+  display: inline-block;
+  padding: 10px 14px;
+  border-radius: 18px;
+  max-width: 80%;
+  word-wrap: break-word;
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+/* align outgoing and incoming */
+.message.me {
+  align-self: flex-end;
+  background: var(--bubble-me);
+  color: #02212a;
+  border-bottom-right-radius: 6px;
+  border-bottom-left-radius: 18px;
+  margin-right: 4px;
+}
+
+.message.them {
+  align-self: flex-start;
+  background: var(--bubble-them);
+  color: #cfeff8;
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 18px;
+  margin-left: 4px;
+}
+
+/* small time spacing */
+.messages .message + .message {
+  margin-top: 2px;
+}
+

@@ -118,6 +118,20 @@ match.emit("match_found", {
     if (members) members.forEach((s) => s.leave(roomId));
     delete activeRooms[roomId];
   });
+  // ✅ Skip current chat and look for next
+socket.on("skip_chat", ({ roomId }) => {
+  const members = activeRooms[roomId];
+  if (members) {
+    io.to(roomId).emit("chat_ended"); // notify both users that chat ended
+    members.forEach(s => s.leave(roomId));
+    delete activeRooms[roomId];
+  }
+
+  // After ending, put the user back into the waiting list to find a new match
+  waitlist.push(socket);
+  socket.emit("waiting");
+  console.log(`${socket.id} skipped chat and rejoined waitlist`);
+});
 });
 
 app.get("/", (_, res) => res.send("Server running ✅"));

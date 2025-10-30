@@ -38,82 +38,103 @@ function pickAny(excludeId) {
   return null;
 }
 
-io.on('connection', (socket) => {
-  console.log('connected', socket.id);
+import express from "express";
+import http from "http";
+import { Server } from "socket.io";
+import cors from "cors";
 
-  socket.on('join_waitlist', ({ interests = [] } = {}) => {
-    // try match by interests first
-    const match = findMatch(interests, socket.id);
-    if (match) {
-      const roomId = Math.random().toString(36).slice(2,9);
-      const room = { users: [socket.id, match.socketId], messages: [] };
-      rooms.set(roomId, room);
-      socket.join(roomId);
-      io.to(match.socketId).socketsJoin(roomId);
-      io.to(roomId).emit('match_found', { roomId, interests });
-      console.log('matched by interest', roomId);
-      return;
-    }
-
-    // no interest match -> put in waiting, setup timeout fallback
-    waiting.push({ socketId: socket.id, interests, ts: Date.now() });
-    socket.emit('waiting');
-
-    // after 8 seconds, if still waiting, fallback to any available user
-    setTimeout(() => {
-      const idx = waiting.findIndex(w => w.socketId === socket.id);
-      if (idx === -1) return;
-      const other = pickAny(socket.id);
-      if (other) {
-        const roomId = Math.random().toString(36).slice(2,9);
-        const room = { users: [socket.id, other.socketId], messages: [] };
-        rooms.set(roomId, room);
-        socket.join(roomId);
-        io.to(other.socketId).socketsJoin(roomId);
-        io.to(roomId).emit('match_found', { roomId, interests });
-        console.log('matched by fallback', roomId);
-      } else {
-        // still no match; keep waiting
-      }
-    }, 8000);
-  });
-
-  socket.on('send_message', ({ roomId, message }) => {
-    const room = rooms.get(roomId);
-    if (!room) return;
-    room.messages.push({ from: socket.id, text: message, ts: Date.now() });
-    socket.to(roomId).emit('receive_message', { text: message });
-  });
-
-  socket.on('leave_chat', ({ roomId } = {}) => {
-    const room = rooms.get(roomId);
-    if (!room) return;
-    io.to(roomId).emit('chat_ended');
-    room.users.forEach(sid => {
-      try { io.sockets.sockets.get(sid)?.leave(roomId); } catch(e){}
-    });
-    rooms.delete(roomId);
-    console.log('room ended', roomId);
-  });
-
-  socket.on('disconnect', () => {
-    console.log('disconnect', socket.id);
-    const wi = waiting.findIndex(w => w.socketId === socket.id);
-    if (wi !== -1) waiting.splice(wi,1);
-    for (const [roomId, room] of rooms.entries()) {
-      if (room.users.includes(socket.id)) {
-        io.to(roomId).emit('chat_ended');
-        room.users.forEach(sid => {
-          try { io.sockets.sockets.get(sid)?.leave(roomId); } catch(e){}
-        });
-        rooms.delete(roomId);
-        console.log('cleaned room on disconnect', roomId);
-        break;
-      }
-    }
-  });
-
+const app = express();
+app.use(cors());
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
 });
+
+const waitlist = [];
+const activeRooms = {};
+const PORT = process.env.PORT || 10000;
+
+io.on("connection", (socket) => {
+  console.log("User connected:", socket.id);
+
+  // Broadcast updated online user count
+  io.emit("user_count", io.engine.clientsCount);
+
+  // Handle disconnects
+  socket.on("disconnect", () => {
+    console.log("User disconnected:", socket.id);
+    io.emit("user_count", io.engine.clientsCount);
+  });
+
+  // When user joins waiting list
+  socket.on("join_waitlist", (data) => {
+    socket.data.interests = data.interests || [];
+    waitlist.push(socket);
+
+    // Try matching with someone with shared interests
+    const match = waitlist.find(
+      (other) =>
+        other.id !== socket.id &&
+        other.data &&
+        other.data.interests.some((i) => socket.data.interests.includes(i))
+    );
+
+    if (match) {
+      const roomId = `${socket.id}-${match.id}`;
+      socket.join(roomId);
+      match.join(roomId);
+      waitlist.splice(waitlist.indexOf(match), 1);
+      waitlist.splice(waitlist.indexOf(socket), 1);
+      activeRooms[roomId] = [socket, match];
+      io.to(roomId).emit("match_found", { roomId });
+    } else {
+      socket.emit("waiting");
+      // fallback random match if idle
+      setTimeout(() => {
+        if (waitlist.includes(socket)) {
+          const random = waitlist.find((s) => s.id !== socket.id);
+          if (random) {
+            const roomId = `${socket.id}-${random.id}`;
+            socket.join(roomId);
+            random.join(roomId);
+            waitlist.splice(waitlist.indexOf(random), 1);
+            waitlist.splice(waitlist.indexOf(socket), 1);
+            activeRooms[roomId] = [socket, random];
+            io.to(roomId).emit("match_found", { roomId });
+          }
+        }
+      }, 8000);
+    }
+  });
+
+  // Messaging
+  socket.on("send_message", ({ roomId, message }) => {
+    socket.to(roomId).emit("receive_message", { text: message });
+  });
+
+  // End chat
+  socket.on("leave_chat", ({ roomId }) => {
+    io.to(roomId).emit("chat_ended");
+    const members = activeRooms[roomId];
+    if (members) members.forEach((s) => s.leave(roomId));
+    delete activeRooms[roomId];
+  });
+
+  // ✅ Typing indicator
+  socket.on("typing", ({ roomId }) => {
+    socket.to(roomId).emit("user_typing");
+  });
+  socket.on("stop_typing", ({ roomId }) => {
+    socket.to(roomId).emit("user_stopped_typing");
+  });
+});
+
+app.get("/", (_, res) => res.send("Server running ✅"));
+
+server.listen(PORT, () => console.log(`Server live on port ${PORT}`));
 
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => console.log('Server listening on', PORT));

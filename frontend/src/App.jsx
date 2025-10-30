@@ -25,23 +25,29 @@ export default function App() {
     socket = io(SOCKET_URL, { autoConnect: false });
 
     socket.on('connect', () => setStatus('Connected to server'));
-    socket.on('waiting', () => setStatus('Waiting for a match...'));
-    socket.on("match_found", (data) => {
-  setRoomId(data.roomId);
-  setStatus(`Matched with ${data.partner.name} (${data.partner.gender}) — Shared: ${data.partner.shared.join(', ') || 'none'}`);
-  setView('chat');
-});
+    socket.on('waiting', () => setStatus('Searching for a partner...'));
+    socket.on('user_count', (count) => setUserCount(count));
+
+    socket.on('match_found', (data) => {
+      setRoomId(data.roomId);
+      setStatus(
+        `Matched with ${data.partner.name} (${data.partner.gender}) — Shared: ${data.partner.shared.join(', ') || 'none'}`
+      );
+      setView('chat');
+      setMessages([]);
+    });
 
     socket.on('receive_message', (m) => {
       setMessages((prev) => [...prev, { from: 'them', text: m.text }]);
     });
+
     socket.on('chat_ended', () => {
-      setStatus('Session ended — all data cleared');
+      setStatus('Session ended');
       setRoomId(null);
       setMessages([]);
-      setTimeout(() => setView('home'), 1200);
+      setTimeout(() => setView('home'), 1000);
     });
-    socket.on('user_count', (count) => setUserCount(count));
+
     socket.on('disconnect', () => setStatus('Disconnected'));
 
     return () => {
@@ -52,6 +58,7 @@ export default function App() {
     };
   }, []);
 
+  // 🧠 Verification question (bot check)
   function generateQuestion() {
     const a = Math.floor(Math.random() * 5) + 1;
     const b = Math.floor(Math.random() * 5) + 1;
@@ -91,6 +98,7 @@ export default function App() {
 
   function start() {
     socket.connect();
+    setStatus('Connecting...');
     socket.emit('join_waitlist', { interests: selected, user });
   }
 
@@ -107,6 +115,15 @@ export default function App() {
     if (roomId) socket.emit('leave_chat', { roomId });
   }
 
+  // 🆕 Skip current chat
+  function skipChat() {
+    if (roomId) {
+      socket.emit('skip_chat', { roomId });
+      setMessages([]);
+      setStatus('Searching for next partner...');
+    }
+  }
+
   return (
     <div className="app">
       <div className="card">
@@ -115,11 +132,11 @@ export default function App() {
           <div className="badge">{userCount} online</div>
         </header>
 
-        {/* STEP 1: User Setup */}
+        {/* STEP 1: Setup */}
         {view === 'setup' && (
           <div className="setup">
             <h2>Welcome to ChatMitra</h2>
-            <p>Before you start, please verify your identity.</p>
+            <p>Before you start, please verify you’re human 👇</p>
 
             <input
               type="text"
@@ -129,66 +146,42 @@ export default function App() {
             />
 
             <div className="gender-select">
-              <label>
-                <input
-                  type="radio"
-                  name="gender"
-                  value="Male"
-                  checked={user.gender === 'Male'}
-                  onChange={(e) =>
-                    setUser({ ...user, gender: e.target.value })
-                  }
-                />
-                Male
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="gender"
-                  value="Female"
-                  checked={user.gender === 'Female'}
-                  onChange={(e) =>
-                    setUser({ ...user, gender: e.target.value })
-                  }
-                />
-                Female
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="gender"
-                  value="Other"
-                  checked={user.gender === 'Other'}
-                  onChange={(e) =>
-                    setUser({ ...user, gender: e.target.value })
-                  }
-                />
-                Other
-              </label>
+              {['Male', 'Female', 'Other'].map((g) => (
+                <label key={g}>
+                  <input
+                    type="radio"
+                    name="gender"
+                    value={g}
+                    checked={user.gender === g}
+                    onChange={(e) => setUser({ ...user, gender: e.target.value })}
+                  />
+                  {g}
+                </label>
+              ))}
             </div>
 
             <div className="verify">
               <p>
-                Are you human? What is {question.a} + {question.b} ?
+                Solve: {question.a} + {question.b} = ?
               </p>
               <input
                 value={answer}
                 onChange={(e) => setAnswer(e.target.value)}
-                placeholder="Enter answer"
+                placeholder="Answer"
               />
               <button onClick={verifyUser}>Verify & Continue</button>
             </div>
           </div>
         )}
 
-        {/* STEP 2: Home (Interest selection) */}
+        {/* STEP 2: Home */}
         {view === 'home' && (
           <div className="home">
             <h1>Hello, {user.name} 👋</h1>
-            <p>Select your interests to find a match.</p>
+            <p>Select a few interests to find your chat partner.</p>
 
             <div className="tags">
-              {['Travel', 'Food', 'Music', 'Friends'].map((t) => (
+              {defaultTags.map((t) => (
                 <button
                   key={t}
                   className={selected.includes(t) ? 'tag active' : 'tag'}
@@ -198,7 +191,7 @@ export default function App() {
                 </button>
               ))}
               {selected
-                .filter((t) => !['Travel', 'Food', 'Music', 'Friends'].includes(t))
+                .filter((t) => !defaultTags.includes(t))
                 .map((t) => (
                   <button
                     key={t}
@@ -225,17 +218,22 @@ export default function App() {
           </div>
         )}
 
-        {/* STEP 3: Chat screen */}
+        {/* STEP 3: Chat */}
         {view === 'chat' && (
           <div className="chat">
             <div className="chat-top">
               <div>{status}</div>
-              <button className="end" onClick={endChat}>
-                End Chat
-              </button>
+              <div>
+                <button className="skip" onClick={skipChat}>
+                  Skip
+                </button>
+                <button className="end" onClick={endChat}>
+                  End
+                </button>
+              </div>
             </div>
 
-            <div className="messages" id="msgbox" ref={msgBoxRef}>
+            <div className="messages" ref={msgBoxRef}>
               {messages.map((m, i) => (
                 <div key={i} className={m.from === 'me' ? 'msg me' : 'msg them'}>
                   {m.text}
@@ -247,9 +245,7 @@ export default function App() {
               <input
                 ref={inputRef}
                 placeholder="Type your message..."
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') send();
-                }}
+                onKeyDown={(e) => e.key === 'Enter' && send()}
               />
               <button onClick={send}>Send</button>
             </div>

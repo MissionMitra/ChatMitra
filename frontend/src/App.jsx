@@ -1,374 +1,237 @@
-import React, { useState, useEffect, useRef } from "react";
+// frontend/src/App.jsx
+import React, { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
+import "./styles.css";
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:4000";
-let socket;
 
 export default function App() {
-  const [view, setView] = useState("setup"); // setup → home → chat
-  const [user, setUser] = useState({ name: "", gender: "", verified: false });
+  const [view, setView] = useState(() => localStorage.getItem("cm_view") || "setup"); // setup | home | chat
+  const [user, setUser] = useState(() => {
+    const s = localStorage.getItem("cm_user");
+    return s ? JSON.parse(s) : { name: "", gender: "", verified: false };
+  });
+  const [tags, setTags] = useState(() => JSON.parse(localStorage.getItem("cm_tags") || "[]"));
+  const [custom, setCustom] = useState("");
   const [question, setQuestion] = useState({});
   const [answer, setAnswer] = useState("");
 
-  const [selected, setSelected] = useState([]);
-  const [custom, setCustom] = useState("");
   const [status, setStatus] = useState("Not connected");
-  const [roomId, setRoomId] = useState(null);
-  const [messages, setMessages] = useState([]);
   const [userCount, setUserCount] = useState(0);
-  const [isTyping, setIsTyping] = useState(false);
+  const [messages, setMessages] = useState([]);
+  const [roomId, setRoomId] = useState(null);
+  const [partner, setPartner] = useState(null);
   const [searching, setSearching] = useState(false);
-  const inputRef = useRef();
-  const msgBoxRef = useRef();
+  const [typing, setTyping] = useState(false);
+
+  const socketRef = useRef(null);
+  const inputRef = useRef(null);
+  const msgBoxRef = useRef(null);
 
   const defaultTags = ["Travel", "Food", "Music", "Friends"];
 
-  // === Socket Connection ===
+  // small helper: persist user/tags/view
   useEffect(() => {
-    socket = io(SOCKET_URL, { autoConnect: false });
+    localStorage.setItem("cm_user", JSON.stringify(user));
+    localStorage.setItem("cm_tags", JSON.stringify(tags));
+    localStorage.setItem("cm_view", view);
+  }, [user, tags, view]);
 
-    socket.on("connect", () => setStatus("Connected ✅"));
-    socket.on("waiting", () => {
-      setStatus("Searching for a partner...");
-      setSearching(true);
-    });
-
-    // ✅ Match Found
-    socket.on("match_found", (data) => {
-      setRoomId(data.roomId);
-      const sharedText =
-        data.shared && data.shared.length > 0
-          ? data.shared.join(", ")
-          : "none";
-      setStatus(
-        `Matched with ${data.partner.name} (${data.partner.gender}) — Shared: ${sharedText}`
-      );
-      setView("chat");
-      setSearching(false);
-    });
-
-    socket.on("receive_message", (m) => {
-      setMessages((prev) => [...prev, { from: "them", text: m.text }]);
-    });
-
-    socket.on("user_typing", () => {
-      setIsTyping(true);
-      setTimeout(() => setIsTyping(false), 1500);
-    });
-
-    socket.on("chat_ended", () => {
-      setStatus("Partner left — finding new match...");
-      setRoomId(null);
-      setMessages([]);
-      setSearching(true);
-      socket.emit("join_waitlist", {
-        interests: selected,
-        user,
-        userId: JSON.parse(localStorage.getItem("chatmitra_session"))?.userId,
-      });
-    });
-
-    socket.on("user_count", (count) => setUserCount(count));
-    socket.on("disconnect", () => setStatus("Disconnected ❌"));
-
-    // ✅ Session restore
-    const savedSession = JSON.parse(localStorage.getItem("chatmitra_session"));
-    if (savedSession) {
-      socket.connect();
-      socket.emit("restore_session", savedSession);
-    }
-
-    socket.on("session_restored", (data) => {
-      setUser({ ...data, verified: true });
-      setSelected(data.interests || []);
-      setView("home");
-    });
-
-    socket.on("no_session", () => console.log("No session found"));
-
-    return () => socket.disconnect();
+  // generate human challenge
+  useEffect(() => {
+    const a = Math.floor(Math.random()*6)+1;
+    const b = Math.floor(Math.random()*6)+1;
+    setQuestion({ a,b });
   }, []);
 
-  // === Human verification ===
-  function generateQuestion() {
-    const a = Math.floor(Math.random() * 5) + 1;
-    const b = Math.floor(Math.random() * 5) + 1;
-    setQuestion({ a, b });
-  }
+  // init socket once
+  useEffect(() => {
+    if (socketRef.current) return;
+    const s = io(SOCKET_URL, { autoConnect: false });
+    socketRef.current = s;
 
-  useEffect(() => generateQuestion(), []);
+    s.on("connect", () => setStatus("Connected"));
+    s.on("disconnect", () => { setStatus("Disconnected"); setSearching(false); });
 
-  function verifyUser() {
-    if (!user.name || !user.gender) {
-      alert("Please enter your name and select gender");
-      return;
-    }
-    if (parseInt(answer) !== question.a + question.b) {
-      alert("Verification failed. Try again.");
-      generateQuestion();
-      setAnswer("");
-      return;
-    }
-
-    const newSession = { userId: crypto.randomUUID() };
-    localStorage.setItem("chatmitra_session", JSON.stringify(newSession));
-    setUser({ ...user, verified: true });
-    setView("home");
-  }
-
-  // === Interest management ===
-  function toggle(tag) {
-    setSelected((prev) =>
-      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
-    );
-  }
-
-  function addCustomInterest() {
-    const trimmed = custom.trim();
-    if (trimmed && !selected.includes(trimmed)) {
-      setSelected((prev) => [...prev, trimmed]);
-    }
-    setCustom("");
-  }
-
-  // === Start Chat ===
-  function start() {
-    const session = JSON.parse(localStorage.getItem("chatmitra_session"));
-    socket.connect();
-    socket.emit("join_waitlist", {
-      interests: selected,
-      user,
-      userId: session?.userId,
+    s.on("user_count", (c) => setUserCount(c));
+    s.on("waiting", () => { setSearching(true); setStatus("Searching..."); });
+    s.on("match_found", (data) => {
+      setRoomId(data.roomId);
+      setPartner(data.partner || null);
+      setStatus(`Matched with ${data.partner?.name || 'Anonymous'}`);
+      setMessages([]);
+      setSearching(false);
+      setView("chat");
     });
-    setSearching(true);
-    setStatus("Searching for a partner...");
+    s.on("receive_message", (m) => {
+      setMessages(prev => [...prev, { from: 'them', text: m.text }]);
+      setTimeout(()=>msgBoxRef.current?.scrollTo(0, msgBoxRef.current.scrollHeight), 60);
+    });
+    s.on("user_typing", () => {
+      setTyping(true);
+      setTimeout(()=>setTyping(false), 1500);
+    });
+    s.on("chat_ended", () => {
+      setStatus("Chat ended");
+      setRoomId(null);
+      setPartner(null);
+      setMessages([]);
+      setTimeout(()=>setView("home"), 700);
+    });
+    s.on("partner_disconnected", () => {
+      setStatus("Partner disconnected, searching new...");
+      setRoomId(null);
+      setPartner(null);
+      setMessages([]);
+      s.emit("join_waitlist", { interests: tags, user, userId: JSON.parse(localStorage.getItem('cm_session')||'null')?.userId });
+    });
+
+    // try to restore session
+    const stored = JSON.parse(localStorage.getItem("cm_session") || "null");
+    if (stored && stored.userId) {
+      s.connect();
+      s.emit('restore_session', stored);
+      s.on('session_restored', (data) => {
+        setUser({...data, verified:true});
+        setTags(data.interests || []);
+        setView("home");
+      });
+    }
+
+    return () => s.disconnect();
+  }, []);
+
+  // helper scroll
+  useEffect(() => {
+    if (msgBoxRef.current) msgBoxRef.current.scrollTop = msgBoxRef.current.scrollHeight;
+  }, [messages]);
+
+  // actions
+  function verify() {
+    if (!user.name.trim() || !user.gender) { alert('enter name/gender'); return; }
+    if (parseInt(answer||'0',10) !== (question.a + question.b)) { alert('verify failed'); return; }
+    const uuid = crypto?.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    const session = { userId: uuid };
+    localStorage.setItem('cm_session', JSON.stringify(session));
+    // set user verified and persist
+    setUser(u => ({ ...u, verified: true }));
+    setView('home');
   }
 
-  // === Send Message ===
+  function toggleTag(t) { setTags(prev => prev.includes(t) ? prev.filter(x=>x!==t) : [...prev, t]); }
+  function addCustom() { const s = custom.trim(); if(!s) return; if(!tags.includes(s)) setTags(p=>[...p,s]); setCustom(''); }
+
+  function startChat() {
+    if (!user.verified) { alert('verify first'); return; }
+    if (!socketRef.current.connected) socketRef.current.connect();
+    setMessages([]); setSearching(true);
+    const session = JSON.parse(localStorage.getItem('cm_session')||'null');
+    socketRef.current.emit('join_waitlist', { interests: tags, user, userId: session?.userId });
+  }
+
   function send() {
-    const txt = inputRef.current.value.trim();
-    if (!txt || !roomId) return;
-    socket.emit("send_message", { roomId, message: txt });
-    setMessages((prev) => [...prev, { from: "me", text: txt }]);
-    inputRef.current.value = "";
-    msgBoxRef.current.scrollTop = msgBoxRef.current.scrollHeight;
+    const txt = inputRef.current?.value.trim();
+    if(!txt || !roomId) return;
+    socketRef.current.emit('send_message', { roomId, message: txt });
+    setMessages(prev => [...prev, { from: 'me', text: txt }]);
+    inputRef.current.value = '';
+    setTimeout(()=>msgBoxRef.current?.scrollTo(0,msgBoxRef.current.scrollHeight),50);
   }
 
-  // === Typing ===
   function handleTyping() {
-    if (roomId) socket.emit("typing", { roomId });
+    if(roomId) socketRef.current.emit('typing', { roomId });
   }
 
-  // === End & Skip Chat ===
-  function endChat() {
-    if (roomId) socket.emit("leave_chat", { roomId });
-    setRoomId(null);
-    setMessages([]);
-    setSearching(true);
+  function skip() {
+    if(roomId) socketRef.current.emit('skip_chat', { roomId });
+    else {
+      // not in room, rejoin waitlist
+      socketRef.current.emit('join_waitlist', { interests: tags, user, userId: JSON.parse(localStorage.getItem('cm_session')||'null')?.userId });
+      setSearching(true);
+    }
+    setMessages([]); setPartner(null); setRoomId(null);
   }
 
-  function skipChat() {
-    if (roomId) socket.emit("skip_chat", { roomId });
-    setRoomId(null);
-    setMessages([]);
-    setSearching(true);
+  function end() {
+    if(roomId) socketRef.current.emit('leave_chat', { roomId });
+    setMessages([]); setPartner(null); setRoomId(null); setSearching(false);
   }
 
+  // UI
   return (
-    <div
-      className="min-h-screen flex justify-center items-center bg-gradient-to-b from-[#07121e] to-[#0c1d2f] text-white px-4"
-      style={{ fontFamily: "Poppins, sans-serif" }}
-    >
-      <div className="w-full max-w-md bg-[#0b1623] rounded-2xl shadow-2xl overflow-hidden">
-        <header className="flex justify-between items-center bg-[#112233] px-5 py-3">
-          <h2 className="text-lg font-semibold">ChatMitra</h2>
-          <span className="text-sm text-gray-400">{userCount} online</span>
+    <div className="cm-root">
+      <div className="cm-card">
+        <header className="cm-header">
+          <div className="cm-logo">ChatMitra</div>
+          <div className="cm-online">{userCount} online</div>
         </header>
 
-        {/* === Setup Screen === */}
-        {view === "setup" && (
-          <div className="p-6 text-center space-y-4">
-            <h1 className="text-2xl font-bold">Welcome to ChatMitra</h1>
-            <p>Please verify yourself to continue.</p>
-
-            <input
-              type="text"
-              placeholder="Enter your name"
-              className="w-full p-2 rounded bg-[#132234] border border-gray-600 focus:outline-none"
-              value={user.name}
-              onChange={(e) => setUser({ ...user, name: e.target.value })}
-            />
-
-            <div className="flex justify-center gap-4">
-              {["Male", "Female", "Other"].map((g) => (
-                <label key={g}>
-                  <input
-                    type="radio"
-                    name="gender"
-                    value={g}
-                    checked={user.gender === g}
-                    onChange={(e) =>
-                      setUser({ ...user, gender: e.target.value })
-                    }
-                  />{" "}
-                  {g}
-                </label>
+        {/* setup */}
+        {view==='setup' && (
+          <div className="cm-body">
+            <h2>Welcome</h2>
+            <input className="cm-input" placeholder="Display name" value={user.name} onChange={e=>setUser({...user,name:e.target.value})} />
+            <div className="cm-gender">
+              {['Male','Female','Other'].map(g=>(
+                <label key={g}><input type="radio" name="g" value={g} checked={user.gender===g} onChange={e=>setUser({...user,gender:e.target.value})} /> {g}</label>
               ))}
             </div>
-
-            <p>
-              Are you human? Solve: {question.a} + {question.b} = ?
-            </p>
-            <div className="flex gap-2 justify-center">
-              <input
-                value={answer}
-                onChange={(e) => setAnswer(e.target.value)}
-                placeholder="Answer"
-                className="p-2 rounded bg-[#132234] w-20 text-center"
-              />
-              <button
-                onClick={verifyUser}
-                className="bg-[#00bcd4] hover:bg-[#0097a7] px-3 py-2 rounded text-black font-medium"
-              >
-                Verify & Continue
-              </button>
+            <div className="cm-verify">
+              <div>Are you human? {question.a} + {question.b} =</div>
+              <input className="cm-input small" value={answer} onChange={e=>setAnswer(e.target.value)} />
+              <button className="cm-btn primary" onClick={verify}>Verify</button>
             </div>
           </div>
         )}
 
-        {/* === Interest Selection === */}
-        {view === "home" && (
-          <div className="p-6 text-center space-y-4">
-            <h1 className="text-2xl font-semibold">
-              Hello, {user.name} 👋
-            </h1>
-            <p className="text-gray-300 text-sm">
-              Select your interests to find a match.
-            </p>
-
-            <div className="flex flex-wrap justify-center gap-2">
-              {defaultTags.map((t) => (
-                <button
-                  key={t}
-                  className={`px-3 py-1 rounded-full ${
-                    selected.includes(t)
-                      ? "bg-[#00bcd4] text-black"
-                      : "bg-[#132234] text-gray-300"
-                  }`}
-                  onClick={() => toggle(t)}
-                >
-                  {t}
-                </button>
+        {/* home */}
+        {view==='home' && (
+          <div className="cm-body">
+            <h2>Hello, {user.name}</h2>
+            <div className="cm-tags">
+              {defaultTags.map(t=>(
+                <button key={t} className={`tag ${tags.includes(t)?'active':''}`} onClick={()=>toggleTag(t)}>{t}</button>
               ))}
-              {selected
-                .filter((t) => !defaultTags.includes(t))
-                .map((t) => (
-                  <button
-                    key={t}
-                    className="px-3 py-1 rounded-full bg-[#00bcd4] text-black"
-                    onClick={() => toggle(t)}
-                  >
-                    {t}
-                  </button>
-                ))}
+              {tags.filter(t=>!defaultTags.includes(t)).map(t=>(
+                <button key={t} className="tag active" onClick={()=>toggleTag(t)}>{t}</button>
+              ))}
             </div>
-
-            <div className="flex gap-2 justify-center">
-              <input
-                value={custom}
-                onChange={(e) => setCustom(e.target.value)}
-                placeholder="Add custom interest..."
-                className="p-2 rounded bg-[#132234] w-2/3"
-              />
-              <button
-                onClick={addCustomInterest}
-                className="bg-[#00bcd4] px-3 py-2 rounded text-black font-medium"
-              >
-                Add
-              </button>
+            <div className="cm-custom">
+              <input className="cm-input" value={custom} onChange={e=>setCustom(e.target.value)} placeholder="Custom interest" />
+              <button className="cm-btn" onClick={addCustom}>Add</button>
             </div>
-
-            <button
-              onClick={start}
-              className="bg-[#00bcd4] hover:bg-[#0097a7] px-5 py-2 rounded text-black font-semibold"
-            >
-              Start Chat
-            </button>
+            <button className="cm-btn primary big" onClick={startChat}>Start Chat</button>
           </div>
         )}
 
-        {/* === Chat Screen === */}
-        {view === "chat" && (
-          <div className="p-4 flex flex-col h-[70vh]">
-            <div className="flex justify-between items-center text-sm mb-3">
-              <div>{status}</div>
-              <div className="flex gap-2">
-                <button
-                  onClick={skipChat}
-                  className="bg-[#00bcd4] text-black px-3 py-1 rounded"
-                >
-                  Skip
-                </button>
-                <button
-                  onClick={endChat}
-                  className="bg-red-500 text-white px-3 py-1 rounded"
-                >
-                  End
-                </button>
+        {/* chat */}
+        {view==='chat' && (
+          <div className="cm-body chat">
+            <div className="chat-top">
+              <div>{status}{partner?.shared ? ` — Shared: ${partner.shared?.length ? partner.shared.join(', ') : 'none'}` : ''}</div>
+              <div className="chat-controls">
+                <button className="cm-btn" onClick={skip}>Skip</button>
+                <button className="cm-btn ghost" onClick={end}>End</button>
               </div>
             </div>
 
-            <div
-              className="flex-1 overflow-y-auto bg-[#091625] rounded-xl p-3 space-y-2"
-              ref={msgBoxRef}
-            >
-              {messages.map((m, i) => (
-                <div
-                  key={i}
-                  className={`max-w-[75%] px-3 py-2 rounded-2xl ${
-                    m.from === "me"
-                      ? "bg-[#00bcd4] text-black self-end ml-auto"
-                      : "bg-[#132234] text-white"
-                  }`}
-                >
-                  {m.text}
-                </div>
+            {searching && <div className="searching"><span className="dot"/><span className="dot"/><span className="dot"/> Searching for partner...</div>}
+
+            <div className="messages" ref={msgBoxRef}>
+              {messages.map((m,i)=>(
+                <div key={i} className={`message ${m.from==='me'?'me':'them'}`}>{m.text}</div>
               ))}
-
-              {isTyping && (
-                <div className="text-xs text-gray-400 italic">User is typing...</div>
-              )}
+              {typing && <div className="typing">Partner is typing...</div>}
             </div>
 
-            {searching ? (
-              <div className="text-center py-4 text-sm text-gray-400 animate-pulse">
-                Searching for a partner...
-              </div>
-            ) : (
-              <div className="flex gap-2 mt-3">
-                <input
-                  ref={inputRef}
-                  placeholder="Type your message..."
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") send();
-                    else handleTyping();
-                  }}
-                  className="flex-1 p-2 rounded bg-[#132234] text-white"
-                />
-                <button
-                  onClick={send}
-                  className="bg-[#00bcd4] px-4 py-2 rounded text-black font-semibold"
-                >
-                  Send
-                </button>
-              </div>
-            )}
+            <div className="composer">
+              <input className="cm-input" ref={inputRef} placeholder="Type a message..." onKeyDown={e=>{ if(e.key==='Enter') send(); else handleTyping(); }} />
+              <button className="cm-btn primary" onClick={send}>Send</button>
+            </div>
           </div>
         )}
 
-        <footer className="text-center text-xs text-gray-400 py-2">
-          © {new Date().getFullYear()} ChatMitra — Ephemeral chats
-        </footer>
+        <footer className="cm-footer">© {new Date().getFullYear()} ChatMitra — Ephemeral chats</footer>
       </div>
     </div>
   );

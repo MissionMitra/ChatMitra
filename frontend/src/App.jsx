@@ -29,15 +29,17 @@ export default function App() {
 
     // ✅ Show partner info and shared interests
     socket.on("match_found", (data) => {
-      setRoomId(data.roomId);
-      setPartnerInfo(data.partner);
-      setStatus(
-        `Matched with ${data.partner.name} (${data.partner.gender}) — Shared: ${
-          data.partner.shared?.length ? data.partner.shared.join(", ") : "none"
-        }`
-      );
-      setView("chat");
-    });
+  setRoomId(data.roomId);
+  const sharedText =
+    data.shared && data.shared.length > 0
+      ? data.shared.join(", ")
+      : "none";
+  setStatus(
+    `Matched with ${data.partner.name} (${data.partner.gender}) — Shared: ${sharedText}`
+  );
+  setView("chat");
+});
+
 
     socket.on("receive_message", (m) => {
       setMessages((prev) => [...prev, { from: "them", text: m.text }]);

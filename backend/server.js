@@ -59,12 +59,25 @@ io.on("connection", (socket) => {
       activeRooms[roomId] = [socket, match];
 
       // Send match info to both
-      io.to(roomId).emit("match_found", {
-        roomId,
-        you: socket.data,
-        partner: match.data,
-        shared,
-      });
+     // Notify each user with their partner’s info
+socket.emit("match_found", {
+  roomId,
+  partner: {
+    name: match.data.name,
+    gender: match.data.gender,
+    shared: socket.data.interests.filter(i => match.data.interests.includes(i))
+  }
+});
+
+match.emit("match_found", {
+  roomId,
+  partner: {
+    name: socket.data.name,
+    gender: socket.data.gender,
+    shared: match.data.interests.filter(i => socket.data.interests.includes(i))
+  }
+});
+
 
       console.log(`✅ Match found between ${socket.data.name} and ${match.data.name}`);
     } else {

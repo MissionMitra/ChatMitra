@@ -1,15 +1,14 @@
+// frontend/src/App.jsx
 import React, { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:4000";
-let socket;
 
 export default function App() {
   const [view, setView] = useState("setup"); // setup -> home -> chat
   const [user, setUser] = useState({ name: "", gender: "", verified: false });
   const [question, setQuestion] = useState({});
   const [answer, setAnswer] = useState("");
-
   const [selected, setSelected] = useState([]);
   const [custom, setCustom] = useState("");
   const [status, setStatus] = useState("Not connected");
@@ -18,27 +17,67 @@ export default function App() {
   const [userCount, setUserCount] = useState(0);
   const [searching, setSearching] = useState(false);
 
+  const socketRef = useRef(null);
   const inputRef = useRef();
   const msgBoxRef = useRef();
-  const messagesEndRef = useRef();
+  const endRef = useRef();
 
   const defaultTags = ["Travel", "Food", "Music", "Friends"];
 
+  // --- session persistence: load saved user and selected tags
   useEffect(() => {
-    socket = io(SOCKET_URL, { autoConnect: false });
+    try {
+      const savedUser = sessionStorage.getItem("chatmitra_user");
+      const savedSelected = sessionStorage.getItem("chatmitra_selected");
+      const savedView = sessionStorage.getItem("chatmitra_view");
+      if (savedUser) setUser(JSON.parse(savedUser));
+      if (savedSelected) setSelected(JSON.parse(savedSelected));
+      if (savedView) setView(savedView);
+    } catch (e) {}
+  }, []);
 
-    socket.on("connect", () => {
+  // save user + selected to sessionStorage
+  useEffect(() => {
+    sessionStorage.setItem("chatmitra_user", JSON.stringify(user));
+  }, [user]);
+
+  useEffect(() => {
+    sessionStorage.setItem("chatmitra_selected", JSON.stringify(selected));
+  }, [selected]);
+
+  useEffect(() => {
+    sessionStorage.setItem("chatmitra_view", view);
+  }, [view]);
+
+  // socket initialization and listeners
+  useEffect(() => {
+    const sock = io(SOCKET_URL, { autoConnect: false });
+    socketRef.current = sock;
+
+    sock.on("connect", () => {
       setStatus("Connected to server");
+      // If user was previously verified and not in chat, auto rejoin waitlist
+      const wasVerified = JSON.parse(sessionStorage.getItem("chatmitra_user") || "null");
+      if (wasVerified && wasVerified.verified) {
+        // rejoin automatically so refresh doesn't drop user to welcome
+        // Only rejoin if not currently in a chat
+        const curView = sessionStorage.getItem("chatmitra_view");
+        if (curView !== "chat") {
+          setStatus("Re-connecting to match...");
+          setSearching(true);
+          sock.emit("join_waitlist", { interests: selected, user: wasVerified });
+        }
+      }
     });
 
-    socket.on("waiting", () => {
+    sock.on("waiting", () => {
       setSearching(true);
       setStatus("Searching for a partner...");
     });
 
-    socket.on("user_count", (count) => setUserCount(count));
+    sock.on("user_count", (count) => setUserCount(count));
 
-    socket.on("match_found", (data) => {
+    sock.on("match_found", (data) => {
       setSearching(false);
       setRoomId(data.roomId || null);
       const partnerName = data.partner?.name || "Anonymous";
@@ -47,43 +86,45 @@ export default function App() {
       setStatus(`Matched with ${partnerName} (${partnerGender}) — Shared: ${shared}`);
       setMessages([]);
       setView("chat");
+      sessionStorage.setItem("chatmitra_view", "chat");
     });
 
-    socket.on("receive_message", (m) => {
+    sock.on("receive_message", (m) => {
       setMessages((prev) => [...prev, { from: "them", text: m.text }]);
     });
 
-    socket.on("chat_ended", () => {
+    sock.on("chat_ended", () => {
       setStatus("Session ended");
       setRoomId(null);
       setMessages([]);
-      setTimeout(() => {
-        setView("home");
-      }, 800);
+      setView("home");
+      setSearching(false);
+      // after chat ended, automatically rejoin waitlist if desired:
+      // sock.emit("join_waitlist", { interests: selected, user });
     });
 
-    socket.on("disconnect", () => {
+    sock.on("disconnect", () => {
       setStatus("Disconnected");
       setSearching(false);
     });
 
     return () => {
       try {
-        socket.disconnect();
-        socket.off();
+        sock.disconnect();
+        sock.off();
       } catch (e) {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [selected]);
 
-  // autoscroll when messages change
+  // autoscroll messages when new message arrives
   useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+    if (msgBoxRef.current) {
+      msgBoxRef.current.scrollTop = msgBoxRef.current.scrollHeight;
     }
   }, [messages]);
 
-  // small human-check generator
+  // Small human-check generator
   function generateQuestion() {
     const a = Math.floor(Math.random() * 5) + 1;
     const b = Math.floor(Math.random() * 5) + 1;
@@ -111,9 +152,9 @@ export default function App() {
   }
 
   function addCustomInterest() {
-    const trim = custom.trim();
-    if (!trim) return;
-    if (!selected.includes(trim)) setSelected((p) => [...p, trim]);
+    const t = custom.trim();
+    if (!t) return;
+    if (!selected.includes(t)) setSelected((p) => [...p, t]);
     setCustom("");
   }
 
@@ -122,32 +163,42 @@ export default function App() {
       alert("Please verify yourself first");
       return;
     }
-    // connect socket and request match
-    socket.connect();
+    const sock = socketRef.current;
+    if (!sock) return;
+    sock.connect();
     setSearching(true);
     setStatus("Connecting...");
-    socket.emit("join_waitlist", { interests: selected, user });
+    sock.emit("join_waitlist", { interests: selected, user });
   }
 
   function send() {
     const txt = (inputRef.current?.value || "").trim();
     if (!txt || !roomId) return;
-    socket.emit("send_message", { roomId, message: txt });
+    const sock = socketRef.current;
+    sock.emit("send_message", { roomId, message: txt });
     setMessages((prev) => [...prev, { from: "me", text: txt }]);
     if (inputRef.current) inputRef.current.value = "";
   }
 
   function endChat() {
-    if (roomId) socket.emit("leave_chat", { roomId });
-    setSearching(false);
+    const sock = socketRef.current;
+    if (roomId && sock) {
+      sock.emit("leave_chat", { roomId });
+      setRoomId(null);
+      setSearching(false);
+    }
+    setView("home");
   }
 
   function skipChat() {
-    if (!roomId) return;
-    socket.emit("skip_chat", { roomId });
-    setMessages([]);
-    setSearching(true);
-    setStatus("Searching for next partner...");
+    const sock = socketRef.current;
+    if (roomId && sock) {
+      sock.emit("skip_chat", { roomId });
+      setMessages([]);
+      setSearching(true);
+      setStatus("Searching for next partner...");
+      setRoomId(null);
+    }
   }
 
   return (
@@ -158,10 +209,11 @@ export default function App() {
           <div className="badge">{userCount} online</div>
         </header>
 
+        {/* Setup */}
         {view === "setup" && (
           <div className="setup-card">
             <h1>Welcome to ChatMitra</h1>
-            <p className="sub">Before you start, please verify you’re human</p>
+            <p className="sub">Before you start, verify you’re human</p>
 
             <label className="field">
               <span className="label">Display name</span>
@@ -178,13 +230,7 @@ export default function App() {
               <div className="gender-row">
                 {["Male", "Female", "Other"].map((g) => (
                   <label key={g} className="radio">
-                    <input
-                      type="radio"
-                      name="gender"
-                      value={g}
-                      checked={user.gender === g}
-                      onChange={(e) => setUser((u) => ({ ...u, gender: e.target.value }))}
-                    />
+                    <input type="radio" name="gender" value={g} checked={user.gender === g} onChange={(e) => setUser((u) => ({ ...u, gender: e.target.value }))} />
                     <span>{g}</span>
                   </label>
                 ))}
@@ -195,12 +241,7 @@ export default function App() {
               <span className="label">Are you human? Solve</span>
               <div className="verify-row">
                 <div className="question">{question.a} + {question.b} =</div>
-                <input
-                  className="text small"
-                  placeholder="Answer"
-                  value={answer}
-                  onChange={(e) => setAnswer(e.target.value)}
-                />
+                <input className="text small" placeholder="Answer" value={answer} onChange={(e) => setAnswer(e.target.value)} />
                 <button className="btn primary" onClick={verifyUser}>Verify & Continue</button>
               </div>
             </label>
@@ -209,11 +250,12 @@ export default function App() {
           </div>
         )}
 
+        {/* Home */}
         {view === "home" && (
           <div className="home-card">
             <div className="home-head">
               <div className="hello">Hello, <strong>{user.name}</strong></div>
-              <div className="sub-muted">Select interests to match with similar people</div>
+              <div className="sub-muted">Select interests to match</div>
             </div>
 
             <div className="tags-row">
@@ -232,12 +274,13 @@ export default function App() {
 
             <div className="start-row">
               <button className="btn primary big" onClick={start}>Start Chat</button>
-              <div className="sub-muted">Matching by shared interests — fallback to random if no match</div>
+              <div className="sub-muted">Matches by shared interests — fallback to random if none</div>
             </div>
             <div className="footer-note">© {new Date().getFullYear()} ChatMitra — Ephemeral chats</div>
           </div>
         )}
 
+        {/* Chat */}
         {view === "chat" && (
           <div className="chat-card">
             <div className="chat-top">
@@ -255,11 +298,8 @@ export default function App() {
 
             <div className="messages" ref={msgBoxRef}>
               {messages.map((m, i) => (
-                <div key={i} className={m.from === "me" ? "msg me" : "msg them"}>
-                  {m.text}
-                </div>
+                <div key={i} className={m.from === "me" ? "msg me" : "msg them"}>{m.text}</div>
               ))}
-              <div ref={messagesEndRef} />
             </div>
 
             <div className="composer">
@@ -269,7 +309,6 @@ export default function App() {
           </div>
         )}
 
-        {/* footer outside individual cards */}
       </div>
     </div>
   );

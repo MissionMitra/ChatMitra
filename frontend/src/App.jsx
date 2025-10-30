@@ -311,13 +311,17 @@ export default function App() {
                 </div>
               )}
 
-              <div className="messages" ref={msgBoxRef}>
-                {messages.map((m, i) => (
-                  <div key={i} className={`message ${m.from === "me" ? "me" : "them"}`}>
-                    {m.text}
-                  </div>
-                ))}
-              </div>
+              <div className="messages" id="msgbox" ref={msgBoxRef}>
+  {messages.map((m, i) => (
+    <div
+      key={i}
+      className={`message ${m.from === 'me' ? 'me' : 'them'}`}
+    >
+      {m.text}
+    </div>
+  ))}
+</div>
+
 
               <div className="composer">
                 <input className="input" placeholder="Type your message..." ref={inputRef} onKeyDown={(e) => e.key === "Enter" && sendMessage()} />

@@ -1,10 +1,9 @@
 // backend/server.js
-// Minimal, robust Socket.IO-based matching server
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const cors = require('cors');
-const helmet = require('helmet');
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const cors = require("cors");
+const helmet = require("helmet");
 
 const app = express();
 app.use(helmet());
@@ -13,17 +12,17 @@ app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*' },
+  cors: { origin: "*" },
   pingInterval: 25000,
   pingTimeout: 60000,
 });
 
 const PORT = process.env.PORT || 4000;
 
-// In-memory structures
-const waitlist = [];                   // sockets waiting
-const activeRooms = new Map();         // roomId -> [socketA, socketB]
-const sessions = new Map();            // userId -> { name, gender, interests } (for restore)
+// In-memory structures (MVP)
+const waitlist = [];                 // sockets waiting for match
+const activeRooms = new Map();       // roomId -> [socketA, socketB]
+const sessions = new Map();          // userId -> { name, gender, interests } (for restore)
 
 // Helpers
 function getShared(a = [], b = []) {
@@ -33,13 +32,19 @@ function removeFromWaitlist(s) {
   const i = waitlist.indexOf(s);
   if (i !== -1) waitlist.splice(i, 1);
 }
-function leaveRoom(socket) {
-  for (const [roomId, members] of activeRooms) {
+function socketInRoom(socket) {
+  for (const members of activeRooms.values()) {
+    if (members.includes(socket)) return true;
+  }
+  return false;
+}
+function leaveAnyRoom(socket) {
+  for (const [roomId, members] of activeRooms.entries()) {
     if (members.includes(socket)) {
-      // notify other and cleanup
+      // notify other
       const other = members.find(s => s !== socket);
-      try { other?.emit('chat_ended'); } catch(e){}
-      members.forEach(s => { try { s.leave(roomId); } catch(e){} });
+      try { other?.emit("chat_ended"); } catch(e) {}
+      members.forEach(s => { try { s.leave(roomId); } catch(e) {} });
       activeRooms.delete(roomId);
       return roomId;
     }
@@ -47,151 +52,190 @@ function leaveRoom(socket) {
   return null;
 }
 function createRoom(a, b, shared) {
-  // safety: ensure neither is already in an active room
-  leaveRoom(a); leaveRoom(b);
-  removeFromWaitlist(a); removeFromWaitlist(b);
+  // safety: ensure neither is in another room
+  removeFromWaitlist(a);
+  removeFromWaitlist(b);
+  leaveAnyRoom(a);
+  leaveAnyRoom(b);
 
   const roomId = `${a.id}-${b.id}-${Date.now()}`;
   a.join(roomId);
   b.join(roomId);
   activeRooms.set(roomId, [a, b]);
 
-  // send match info to both
+  // store shared list per partner payload
   try {
-    a.emit('match_found', { roomId, partner: { name: b.data?.name || 'Anonymous', gender: b.data?.gender || 'Unknown' }, shared });
-    b.emit('match_found', { roomId, partner: { name: a.data?.name || 'Anonymous', gender: a.data?.gender || 'Unknown' }, shared });
-  } catch (e) { console.error(e); }
-  console.log(`MATCH ${a.data?.name || a.id} <-> ${b.data?.name || b.id} (shared:${shared.join(',')||'none'})`);
+    a.emit("match_found", {
+      roomId,
+      partner: {
+        name: b.data?.name || "Anonymous",
+        gender: b.data?.gender || "Unknown"
+      },
+      shared: shared || []
+    });
+  } catch (e) {}
+  try {
+    b.emit("match_found", {
+      roomId,
+      partner: {
+        name: a.data?.name || "Anonymous",
+        gender: a.data?.gender || "Unknown"
+      },
+      shared: shared || []
+    });
+  } catch (e) {}
+
+  console.log(`MATCH ${a.data?.name || a.id} <-> ${b.data?.name || b.id} (shared: ${shared.join(",") || "none"})`);
   return roomId;
 }
 
-// Basic per-socket message throttling
-const lastMsgTime = new Map();
+// simple per-socket throttle to avoid flooding
+const lastMsg = new Map();
 function canSend(socket) {
   const now = Date.now();
-  const last = lastMsgTime.get(socket.id) || 0;
-  if (now - last < 400) return false; // 400ms throttle
-  lastMsgTime.set(socket.id, now);
+  const prev = lastMsg.get(socket.id) || 0;
+  if (now - prev < 150) return false; // 150ms encouraged throttle
+  lastMsg.set(socket.id, now);
   return true;
 }
 
-// Socket events
-io.on('connection', socket => {
-  console.log('connect', socket.id);
-  io.emit('user_count', io.engine.clientsCount);
+// Socket.io events
+io.on("connection", (socket) => {
+  console.log("connect:", socket.id);
+  // Note: we intentionally removed broadcasting global user_count per your request.
 
-  // Handle restore session (client sends { userId })
-  socket.on('restore_session', (session) => {
+  // Restore session (client provides { userId })
+  socket.on("restore_session", (session) => {
     if (!session || !session.userId) {
-      socket.emit('no_session');
+      socket.emit("no_session");
       return;
     }
     const saved = sessions.get(session.userId);
     if (saved) {
       socket.data = { ...saved };
-      socket.emit('session_restored', saved);
-      console.log('restored session for', session.userId);
+      socket.emit("session_restored", saved);
+      console.log("session restored for", saved.name || session.userId);
     } else {
-      socket.emit('no_session');
+      socket.emit("no_session");
     }
   });
 
-  // join_waitlist: { interests: [], user: {name,gender}, userId }
-  socket.on('join_waitlist', (payload) => {
+  // Join waitlist and attempt matching
+  socket.on("join_waitlist", (payload) => {
     try {
       const { interests = [], user = {}, userId } = payload || {};
-      socket.data = { ...user, interests };
+
+      // store session if provided
       if (userId) sessions.set(userId, { ...user, interests });
 
-      // ensure no duplicate
+      // attach user info to socket
+      socket.data = { ...user, interests: interests || [], userId };
+
+      // Prevent duplicates: remove existing waitlist entry and leave any room
       removeFromWaitlist(socket);
-      leaveRoom(socket);
+      leaveAnyRoom(socket);
+
+      // If user is currently already in an active room, ignore join request
+      if (socketInRoom(socket)) {
+        socket.emit("waiting");
+        return;
+      }
 
       waitlist.push(socket);
-      socket.emit('waiting');
+      socket.emit("waiting");
 
-      // Find best match: shared interests first
+      // First try to find match by shared interests
       let match = null;
       for (const other of waitlist) {
         if (other.id === socket.id) continue;
-        const shared = getShared(socket.data.interests, other.data?.interests || []);
+        if (!other.data) continue;
+        const shared = getShared(socket.data.interests || [], other.data.interests || []);
         if (shared.length > 0) { match = other; break; }
       }
 
       if (match) {
-        const shared = getShared(socket.data.interests, match.data.interests);
+        const shared = getShared(socket.data.interests || [], match.data.interests || []);
         createRoom(socket, match, shared);
         return;
       }
 
-      // Fallback random after short delay (5s)
+      // fallback random after 2 seconds (faster)
       setTimeout(() => {
         if (!waitlist.includes(socket)) return;
-        // pick any other
-        const other = waitlist.find(s => s.id !== socket.id);
-        if (other) createRoom(socket, other, []);
-        else socket.emit('waiting');
-      }, 5000);
-
-    } catch (e) { console.error(e); socket.emit('error', 'join_failed'); }
+        const random = waitlist.find(s => s.id !== socket.id);
+        if (random) {
+          createRoom(socket, random, []);
+        } else {
+          socket.emit("waiting");
+        }
+      }, 2000);
+    } catch (err) {
+      console.error("join_waitlist error:", err);
+      socket.emit("error", "join_failed");
+    }
   });
 
-  // Restore quick: message pass through
-  socket.on('send_message', ({ roomId, message }) => {
+  // message passing (only to room)
+  socket.on("send_message", ({ roomId, message }) => {
     if (!roomId || !message) return;
-    if (!canSend(socket)) return; // throttle
-    socket.to(roomId).emit('receive_message', { text: message });
+    if (!activeRooms.has(roomId)) return;
+    if (!canSend(socket)) return;
+    // forward to other participants
+    socket.to(roomId).emit("receive_message", { text: message });
   });
 
-  socket.on('typing', ({ roomId }) => {
+  // typing indicator
+  socket.on("typing", ({ roomId }) => {
     if (!roomId) return;
-    socket.to(roomId).emit('user_typing');
+    socket.to(roomId).emit("user_typing");
   });
 
-  socket.on('leave_chat', ({ roomId }) => {
+  // leave chat (user ends)
+  socket.on("leave_chat", ({ roomId }) => {
     const members = activeRooms.get(roomId);
     if (members) {
-      io.to(roomId).emit('chat_ended');
-      members.forEach(s => { try { s.leave(roomId); } catch(e){} });
+      io.to(roomId).emit("chat_ended");
+      members.forEach(s => { try { s.leave(roomId); } catch(e) {} });
       activeRooms.delete(roomId);
     } else {
-      // ensure socket requeued
+      // if not in room, ensure user returned to waitlist
       removeFromWaitlist(socket);
       waitlist.push(socket);
-      socket.emit('waiting');
+      socket.emit("waiting");
     }
   });
 
-  socket.on('skip_chat', ({ roomId }) => {
-    // end current room (if any) and put the user back to waitlist
+  // skip chat: end room and requeue requester immediately
+  socket.on("skip_chat", ({ roomId }) => {
     const members = activeRooms.get(roomId);
     if (members) {
-      io.to(roomId).emit('chat_ended');
-      members.forEach(s => { try { s.leave(roomId); } catch(e){} });
+      // inform both and remove room
+      io.to(roomId).emit("chat_ended");
+      members.forEach(s => { try { s.leave(roomId); } catch(e) {} });
       activeRooms.delete(roomId);
     }
+    // put the skipping socket back into waitlist for quick rematch
     removeFromWaitlist(socket);
     waitlist.push(socket);
-    socket.emit('waiting');
+    socket.emit("waiting");
   });
 
-  socket.on('disconnect', () => {
-    console.log('disconnect', socket.id);
+  // disconnect cleanup
+  socket.on("disconnect", () => {
+    console.log("disconnect:", socket.id);
     removeFromWaitlist(socket);
-    // if in active room, notify partner
+    // if in room, inform partner and cleanup
     for (const [roomId, members] of activeRooms.entries()) {
       if (members.includes(socket)) {
         const partner = members.find(s => s !== socket);
-        try { partner?.emit('partner_disconnected'); } catch(e){}
-        // cleanup
-        members.forEach(s => { try { s.leave(roomId); } catch(e){} });
+        try { partner?.emit("partner_disconnected"); } catch(e) {}
+        members.forEach(s => { try { s.leave(roomId); } catch(e) {} });
         activeRooms.delete(roomId);
         break;
       }
     }
-    io.emit('user_count', io.engine.clientsCount);
   });
 });
 
-app.get('/', (req, res) => res.send('ChatMitra server alive'));
-server.listen(PORT, () => console.log('Server on', PORT));
+app.get("/", (_, res) => res.send("ChatMitra server running"));
+server.listen(PORT, () => console.log(`Server listening on ${PORT}`));

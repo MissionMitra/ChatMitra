@@ -7,7 +7,7 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:4000";
 
 export default function App() {
   const socketRef = useRef(null);
-  const [view, setView] = useState(() => localStorage.getItem("cm_view") || "setup"); // setup | home | chat
+  const [view, setView] = useState(() => localStorage.getItem("cm_view") || "setup");
   const [user, setUser] = useState(() => {
     const s = localStorage.getItem("cm_user");
     return s ? JSON.parse(s) : { name: "", gender: "", verified: false };
@@ -29,21 +29,18 @@ export default function App() {
 
   const defaultTags = ["Travel", "Food", "Music", "Friends"];
 
-  // persist minimal state
   useEffect(() => {
     localStorage.setItem("cm_user", JSON.stringify(user));
     localStorage.setItem("cm_tags", JSON.stringify(tags));
     localStorage.setItem("cm_view", view);
   }, [user, tags, view]);
 
-  // human challenge
   useEffect(() => {
     const a = Math.floor(Math.random() * 6) + 1;
     const b = Math.floor(Math.random() * 6) + 1;
     setQuestion({ a, b });
   }, []);
 
-  // init socket once
   useEffect(() => {
     if (socketRef.current) return;
     const s = io(SOCKET_URL, { autoConnect: false, transports: ["websocket", "polling"] });
@@ -91,11 +88,9 @@ export default function App() {
       setPartner(null);
       setRoomId(null);
       setMessages([]);
-      // auto rejoin queue
       s.emit("join_waitlist", { interests: tags, user, userId: JSON.parse(localStorage.getItem("cm_session")||"null")?.userId });
     });
 
-    // restore session if available
     const stored = JSON.parse(localStorage.getItem("cm_session") || "null");
     if (stored && stored.userId) {
       s.connect();
@@ -108,19 +103,15 @@ export default function App() {
     }
 
     return () => s.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // auto-scroll messages
   useEffect(() => {
     if (msgBoxRef.current) msgBoxRef.current.scrollTop = msgBoxRef.current.scrollHeight;
   }, [messages]);
 
-  // actions
   function verify() {
     if (!user.name.trim() || !user.gender) { alert("Enter name & gender"); return; }
     if (parseInt(answer || "0", 10) !== (question.a + question.b)) { alert("Verification failed"); return; }
-    // create session id and store
     const uuid = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
     localStorage.setItem("cm_session", JSON.stringify({ userId: uuid }));
     setUser(u => ({ ...u, verified: true }));
@@ -160,17 +151,21 @@ export default function App() {
     setMessages([]); setPartner(null); setRoomId(null); setSearching(true);
   }
 
-  function end() {
+  // 🔹 NEW: Go home when clicking ChatMitra label
+  function goHome() {
     if (roomId) socketRef.current.emit("leave_chat", { roomId });
-    setMessages([]); setPartner(null); setRoomId(null); setSearching(false);
+    setRoomId(null);
+    setPartner(null);
+    setMessages([]);
+    setView("home");
   }
 
   return (
     <div className="cm-root">
       <div className="cm-card">
         <header className="cm-header">
-          <div className="cm-logo">ChatMitra</div>
-          {/* online count removed as requested */}
+          {/* 🔹 clickable ChatMitra label */}
+          <div className="cm-logo" style={{cursor:'pointer'}} onClick={goHome}>ChatMitra</div>
         </header>
 
         {/* setup */}
@@ -218,7 +213,7 @@ export default function App() {
               <div>{status}{partner?.shared ? ` — Shared: ${partner.shared.length ? partner.shared.join(', ') : 'none'}` : ''}</div>
               <div className="chat-controls">
                 <button className="cm-btn" onClick={skip}>Skip</button>
-                <button className="cm-btn" onClick={end}>End</button>
+                {/* 🔹 End button removed */}
               </div>
             </div>
 
